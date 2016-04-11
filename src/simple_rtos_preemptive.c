@@ -8,6 +8,7 @@
  ============================================================================
  */
 
+#include "simple_rtos_preemptive.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -24,42 +25,96 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 
-FILE* fd;
-
-#define SCHEDULER_MAX_THREAD_NR	10
-
 //Forward declarations
 void handler(int signal);
 void scheduler(void);
-
-typedef struct _thread thread_t;
-
-typedef struct _thread {
-	uint32_t wait_cnt;
-	ucontext_t context;
-	char* name;
-	int priority;
-	uint8_t index;
-	void (*foo)(void*);
-	void* data;
-	thread_t* handler;
-
-} thread_t;
-
-typedef struct _scheduler {
-	uint8_t current_thread_indx;
-	uint8_t threads_number;
-	heap_t* thread_ready_list;
-
-	thread_t *thread_list[SCHEDULER_MAX_THREAD_NR];
-
-	struct sigaction sa;
-	struct itimerval it;
-	struct itimerval it_cp;
-
-} scheduler_t;
+void task_create(void (*foo)(void*), char* name, int priority, void* data,
+		thread_t* handler);
+void task_wait(uint32_t ms);
 
 scheduler_t sched;
+
+/* Simple differential time measure */
+uint32_t timestamp_ms(struct timeval* start, struct timeval* last) {
+	uint32_t ret = 0;
+
+	ret = (((start->tv_sec * 1000000) + start->tv_usec)
+			- ((last->tv_sec * 1000000) + last->tv_usec)) / 1000;
+
+	memcpy(last, start, sizeof(struct timeval));
+
+	return ret;
+}
+
+/**
+ * Test tasks
+ */
+void task_test3(void* param) {
+	static struct timeval start, last;
+
+	while (1) {
+
+		gettimeofday(&start, NULL);
+
+		fprintf(stdout, "test task3:%d\n", timestamp_ms(&start, &last));
+		fflush(stdout);
+
+		task_wait(1000);
+
+	}
+
+}
+
+void task_test2(void* param) {
+	static struct timeval start, last;
+
+	while (1) {
+
+		gettimeofday(&start, NULL);
+
+		fprintf(stdout, "test task2:%d\n", timestamp_ms(&start, &last));
+		fflush(stdout);
+
+		task_wait(1000);
+
+	}
+
+}
+
+void task_test1(void* param) {
+	static struct timeval start, last;
+
+	while (1) {
+
+		gettimeofday(&start, NULL);
+
+		fprintf(stdout, "test task:%d\n", timestamp_ms(&start, &last));
+		fflush(stdout);
+		task_wait(1000);
+	}
+
+}
+
+#if (USE_IDLE_HOOK == 1)
+/*
+ * Can be redefined by user
+ */
+__attribute__ ((weak)) void task_idle_hook(void) {
+
+}
+#endif
+
+static void task_idle(void* param) {
+
+	/*create tasks here only for test purposes*/
+	task_create(task_test1, "test1", 10, NULL, NULL);
+	task_create(task_test2, "test2", 10, NULL, NULL);
+	task_create(task_test3, "test3", 10, NULL, NULL);
+	while (1) {
+		task_idle_hook();
+	}
+
+}
 
 void task_enter_critical(void) {
 	//pause timer, similar to EnterCriticalSection
@@ -130,7 +185,6 @@ void task_wait(uint32_t ms) {
 
 void task_kill(void) {
 
-
 	if (sched.thread_list[sched.current_thread_indx] != NULL) {
 
 		task_enter_critical();
@@ -140,7 +194,8 @@ void task_kill(void) {
 		if (sched.threads_number) {
 			sched.threads_number--;
 		}
-		memset(sched.thread_list[sched.current_thread_indx],0,sizeof(*sched.thread_list[sched.current_thread_indx]));
+		memset(sched.thread_list[sched.current_thread_indx], 0,
+				sizeof(*sched.thread_list[sched.current_thread_indx]));
 		sched.thread_list[sched.current_thread_indx] = NULL;
 		task_exit_critical();
 		scheduler();
@@ -152,84 +207,6 @@ void task_kill(void) {
 void task_delete(thread_t* handler) {
 	free(handler);
 	sched.threads_number--;
-}
-static uint32_t test_cnt;
-
-uint32_t timestamp_ms(struct timeval* start, struct timeval* last) {
-	uint32_t ret = 0;
-
-	ret = (((start->tv_sec * 1000000) + start->tv_usec)
-			- ((last->tv_sec * 1000000) + last->tv_usec)) / 1000;
-
-	memcpy(last, start, sizeof(struct timeval));
-
-	return ret;
-}
-
-void task_test3(void* param) {
-	static struct timeval start, last;
-
-	while (1) {
-
-		gettimeofday(&start, NULL);
-
-		fprintf(fd,"test task3:%d\n", timestamp_ms(&start, &last));
-		fflush(stdout);
-		//task_kill();
-
-		task_wait(1000);
-
-	}
-
-}
-
-
-void task_test2(void* param) {
-	static struct timeval start, last;
-
-	while (1) {
-
-		gettimeofday(&start, NULL);
-
-		fprintf(fd,"test task2:%d\n", timestamp_ms(&start, &last));
-		fflush(stdout);
-		//task_kill();
-
-		task_wait(1000);
-
-	}
-
-}
-
-void task_test1(void* param) {
-	static struct timeval start, last;
-	//task_create(task_test2,"test2",14,NULL,NULL);
-
-	while (1) {
-
-		gettimeofday(&start, NULL);
-
-		fprintf(fd,"test task:%d\n", timestamp_ms(&start, &last));
-		fflush(stdout);
-		task_wait(1000);
-	}
-
-}
-__attribute__ ((weak)) void task_idle_hook(void) {
-	test_cnt++;
-
-}
-
-void task_idle(void* param) {
-
-	//testowo
-	task_create(task_test1, "test1", 10, NULL, NULL);
-	task_create(task_test2, "test2", 10, NULL, NULL);
-	task_create(task_test3, "test3", 10, NULL, NULL);
-	while (1) {
-		task_idle_hook();
-	}
-
 }
 
 void scheduler_start(scheduler_t* sched) {
@@ -300,15 +277,11 @@ void scheduler(void) {
 
 }
 
-/* The contexts. */
-static ucontext_t uc[3];
-
 ucontext_t irq_ctx;
 char irq_stack[SIGSTKSZ];
 
 void irq_handler_scheduler(void* param) {
 	//calls scheduler
-	//printf("scheduler start!");
 	scheduler();
 }
 
@@ -327,44 +300,11 @@ void handler(int signal) {
 
 int main(void) {
 
-#if 0
-	/* Install the timer and get the context we can manipulate. */
-	if (getcontext(&uc[1]) == -1
-			|| getcontext(&uc[2]) == -1)
-	abort();
-
-	/* Create a context with a separate stack which causes the
-	 function f to be call with the parameter 1.
-	 Note that the uc_link points to the main context
-	 which will cause the program to terminate once the function
-	 return. */
-	uc[1].uc_link = &uc[0];
-	uc[1].uc_stack.ss_sp = st1;
-	uc[1].uc_stack.ss_size = sizeof st1;
-	makecontext(&uc[1], (void (*)(void)) f1, 0, NULL);
-
-	/* Similarly, but 2 is passed as the parameter to f. */
-	uc[2].uc_link = &uc[0];
-	uc[2].uc_stack.ss_sp = st2;
-	uc[2].uc_stack.ss_size = sizeof st2;
-	makecontext(&uc[2], (void (*)(void)) f2, 0, NULL);
-
-	/* Start running. */
-	swapcontext(&uc[0], &uc[1]);
-	putchar('\n');
-#endif
-
-
-
-	fd=fopen("log.txt","rw");
-
-
-
 	scheduler_start(&sched);
 
-	while (1) {
-		; //usleep(1000000);
-	}
+	/* Program should not get here as scheduler took control over program's execution flow*/
+	while (1)
+		;
 
 	return 0;
 }
